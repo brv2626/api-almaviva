@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import pandas as pd
 import io
@@ -16,13 +16,39 @@ def limpiar_moneda(x):
 @app.route('/procesar-almaviva', methods=['POST'])
 def procesar_archivo():
     if 'file' not in request.files:
-        return "No archivo", 400
+        return jsonify({"error": "No se subió ningún archivo"}), 400
     
     file = request.files['file']
     tipo_reporte = request.form.get('tipo_reporte', 'admin')
     
     df = pd.read_csv(file, quotechar='"')
     
+    # --- 🚨 INICIO DEL FILTRO DE AUDITORÍA (NUEVO) 🚨 ---
+    # Revisamos que las columnas existan y limpiamos los textos para buscar vacíos
+    vehiculos_str = df.get('Vehículo', pd.Series(dtype=str)).astype(str).str.strip().str.lower()
+    programas_str = df.get('Programa de viaje', pd.Series(dtype=str)).astype(str).str.strip().str.lower()
+    
+    # Detectamos celdas vacías, nulas, o que digan 'nan'
+    sin_vehiculo = df[(df.get('Vehículo').isna()) | (vehiculos_str == '') | (vehiculos_str == 'nan') | (vehiculos_str == 'null')]
+    sin_programa = df[(df.get('Programa de viaje').isna()) | (programas_str == '') | (programas_str == 'nan') | (programas_str == 'null')]
+    
+    errores = []
+    if not sin_programa.empty:
+        # Extraemos los IDs de las reservas fallidas (mostramos hasta 15 para no saturar la pantalla)
+        reservas_p = ", ".join(sin_programa['ID de reserva'].astype(str).tolist()[:15])
+        errores.append(f"Falta CENTRO DE COSTO en ID: {reservas_p}")
+        
+    if not sin_vehiculo.empty:
+        reservas_v = ", ".join(sin_vehiculo['ID de reserva'].astype(str).tolist()[:15])
+        errores.append(f"Falta VEHÍCULO (Conductor) en ID: {reservas_v}")
+
+    # Si hay al menos un error, frenamos el proceso y enviamos la alerta a Blogger
+    if errores:
+        mensaje_final = "CORRIGE EN AUTOCAB ANTES DE PROCESAR:\n\n" + "\n".join(errores)
+        return jsonify({"error": mensaje_final}), 400
+    # --- FIN DEL FILTRO DE AUDITORÍA ---
+
+    # Si todo está perfecto, continuamos con la limpieza y cálculos
     df['Precio'] = df['Precio'].apply(limpiar_moneda)
     if 'Costo' in df.columns:
         df['Costo'] = df['Costo'].apply(limpiar_moneda)
@@ -77,24 +103,18 @@ def procesar_archivo():
                 ws[f'F{row}'].number_format = formato_moneda
                 ws[f'G{row}'].number_format = formato_moneda
             
-            # --- NUEVAS FÓRMULAS CORREGIDAS PARA ADMIN ---
-            # 1. El Subtotal es la suma real de todos los precios (Garantiza que cuadre con el Cliente)
             ws[f'E{fila_inicio+3}'] = 'SUBTOTAL'
             ws[f'F{fila_inicio+3}'] = f'=SUM(F2:F{max_row})'
 
-            # 2. DTS busca el texto exacto con asteriscos para evitar errores
             ws[f'E{fila_inicio}'] = 'DTS'
             ws[f'F{fila_inicio}'] = f'=SUMIF(H2:H{max_row}, "*8979*", F2:F{max_row})'
             
-            # 3. TRC es el costo total menos el costo del 8979 (si lo tuviera)
             ws[f'E{fila_inicio+1}'] = 'TRC'
             ws[f'F{fila_inicio+1}'] = f'=SUM(G2:G{max_row}) - SUMIF(H2:H{max_row}, "*8979*", G2:G{max_row})'
             
-            # 4. ING ahora se calcula restando: Subtotal - DTS - TRC. ¡Matemática perfecta!
             ws[f'E{fila_inicio+2}'] = 'ING'
             ws[f'F{fila_inicio+2}'] = f'=F{fila_inicio+3} - F{fila_inicio} - F{fila_inicio+1}'
             
-            # Comisiones e IVA sobre el SUBTOTAL real
             ws[f'E{fila_inicio+4}'] = 'COMISIÓN 5%'
             ws[f'F{fila_inicio+4}'] = f'=F{fila_inicio+3} * 0.05'
             ws[f'E{fila_inicio+5}'] = 'IVA 19%'
@@ -105,7 +125,7 @@ def procesar_archivo():
             for i in range(fila_inicio, fila_inicio + 7):
                 ws[f'F{i}'].number_format = formato_moneda
 
-        else: # Lógica Cliente
+        else: 
             ws.column_dimensions['F'].width = 16
             ws.column_dimensions['G'].width = 30
             
