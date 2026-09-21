@@ -19,7 +19,7 @@ def procesar_archivo():
         return "No archivo", 400
     
     file = request.files['file']
-    tipo_reporte = request.form.get('tipo_reporte', 'admin') # 'admin' o 'cliente'
+    tipo_reporte = request.form.get('tipo_reporte', 'admin')
     
     df = pd.read_csv(file, quotechar='"')
     
@@ -29,7 +29,6 @@ def procesar_archivo():
     if 'Vehículo' in df.columns:
         df['Vehículo'] = df['Vehículo'].astype(str).str.strip()
 
-    # Calcular fechas para el nombre
     try:
         fechas = pd.to_datetime(df['Hora de Pickup (Local)'], dayfirst=True, errors='coerce')
         fechas_validas = fechas.dropna()
@@ -47,11 +46,9 @@ def procesar_archivo():
 
     output = io.BytesIO()
     
-    # Seleccionar columnas según el tipo de reporte
     if tipo_reporte == 'admin':
         columnas = ['ID de reserva', 'Hora de Pickup (Local)', 'Recoger', 'Destino', 'Nombre', 'Precio', 'Costo', 'Vehículo', 'Programa de viaje']
     else:
-        # Reporte limpio para el cliente
         columnas = ['ID de reserva', 'Hora de Pickup (Local)', 'Recoger', 'Destino', 'Nombre', 'Precio', 'Programa de viaje']
         
     df_base = df[columnas].copy()
@@ -79,15 +76,25 @@ def procesar_archivo():
             for row in range(2, max_row + 1):
                 ws[f'F{row}'].number_format = formato_moneda
                 ws[f'G{row}'].number_format = formato_moneda
-                
-            ws[f'E{fila_inicio}'] = 'DTS'
-            ws[f'F{fila_inicio}'] = f'=SUMIF(H2:H{max_row}, "8979", F2:F{max_row})'
-            ws[f'E{fila_inicio+1}'] = 'TRC'
-            ws[f'F{fila_inicio+1}'] = f'=SUMIF(H2:H{max_row}, "<>8979", G2:G{max_row})'
-            ws[f'E{fila_inicio+2}'] = 'ING'
-            ws[f'F{fila_inicio+2}'] = f'=SUMIF(H2:H{max_row}, "<>8979", F2:F{max_row}) - F{fila_inicio+1}'
+            
+            # --- NUEVAS FÓRMULAS CORREGIDAS PARA ADMIN ---
+            # 1. El Subtotal es la suma real de todos los precios (Garantiza que cuadre con el Cliente)
             ws[f'E{fila_inicio+3}'] = 'SUBTOTAL'
-            ws[f'F{fila_inicio+3}'] = f'=F{fila_inicio} + F{fila_inicio+1} + F{fila_inicio+2}'
+            ws[f'F{fila_inicio+3}'] = f'=SUM(F2:F{max_row})'
+
+            # 2. DTS busca el texto exacto con asteriscos para evitar errores
+            ws[f'E{fila_inicio}'] = 'DTS'
+            ws[f'F{fila_inicio}'] = f'=SUMIF(H2:H{max_row}, "*8979*", F2:F{max_row})'
+            
+            # 3. TRC es el costo total menos el costo del 8979 (si lo tuviera)
+            ws[f'E{fila_inicio+1}'] = 'TRC'
+            ws[f'F{fila_inicio+1}'] = f'=SUM(G2:G{max_row}) - SUMIF(H2:H{max_row}, "*8979*", G2:G{max_row})'
+            
+            # 4. ING ahora se calcula restando: Subtotal - DTS - TRC. ¡Matemática perfecta!
+            ws[f'E{fila_inicio+2}'] = 'ING'
+            ws[f'F{fila_inicio+2}'] = f'=F{fila_inicio+3} - F{fila_inicio} - F{fila_inicio+1}'
+            
+            # Comisiones e IVA sobre el SUBTOTAL real
             ws[f'E{fila_inicio+4}'] = 'COMISIÓN 5%'
             ws[f'F{fila_inicio+4}'] = f'=F{fila_inicio+3} * 0.05'
             ws[f'E{fila_inicio+5}'] = 'IVA 19%'
@@ -98,9 +105,9 @@ def procesar_archivo():
             for i in range(fila_inicio, fila_inicio + 7):
                 ws[f'F{i}'].number_format = formato_moneda
 
-        else: # Lógica para el Cliente
+        else: # Lógica Cliente
             ws.column_dimensions['F'].width = 16
-            ws.column_dimensions['G'].width = 30 # Ampliamos Programa de Viaje
+            ws.column_dimensions['G'].width = 30
             
             for row in range(2, max_row + 1):
                 ws[f'F{row}'].number_format = formato_moneda
