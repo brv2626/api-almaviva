@@ -21,20 +21,31 @@ def procesar_archivo():
     file = request.files['file']
     tipo_reporte = request.form.get('tipo_reporte', 'admin')
     
-    df = pd.read_csv(file, quotechar='"')
+    # --- 🚨 NUEVO: LECTOR INTELIGENTE A PRUEBA DE EXCEL 🚨 ---
+    # Guardamos el archivo en la memoria para poder leerlo varias veces si es necesario
+    file_content = file.read()
     
-    # --- 🚨 INICIO DEL FILTRO DE AUDITORÍA (NUEVO) 🚨 ---
-    # Revisamos que las columnas existan y limpiamos los textos para buscar vacíos
+    try:
+        # Intento 1: Como viene de Autocab (Comas y UTF-8)
+        df = pd.read_csv(io.BytesIO(file_content), sep=',', quotechar='"', encoding='utf-8')
+        if len(df.columns) < 3: # Si tiene menos de 3 columnas, Excel lo guardó con punto y coma
+            df = pd.read_csv(io.BytesIO(file_content), sep=';', quotechar='"', encoding='utf-8')
+    except UnicodeDecodeError:
+        # Intento 2: Si Excel le cambió el idioma/codificación (ANSI/Latin1)
+        df = pd.read_csv(io.BytesIO(file_content), sep=',', quotechar='"', encoding='latin1')
+        if len(df.columns) < 3:
+            df = pd.read_csv(io.BytesIO(file_content), sep=';', quotechar='"', encoding='latin1')
+    # --- FIN DEL LECTOR INTELIGENTE ---
+
+    # --- INICIO DEL FILTRO DE AUDITORÍA ESTRICTO ---
     vehiculos_str = df.get('Vehículo', pd.Series(dtype=str)).astype(str).str.strip().str.lower()
     programas_str = df.get('Programa de viaje', pd.Series(dtype=str)).astype(str).str.strip().str.lower()
     
-    # Detectamos celdas vacías, nulas, o que digan 'nan'
     sin_vehiculo = df[(df.get('Vehículo').isna()) | (vehiculos_str == '') | (vehiculos_str == 'nan') | (vehiculos_str == 'null')]
     sin_programa = df[(df.get('Programa de viaje').isna()) | (programas_str == '') | (programas_str == 'nan') | (programas_str == 'null')]
     
     errores = []
     if not sin_programa.empty:
-        # Extraemos los IDs de las reservas fallidas (mostramos hasta 15 para no saturar la pantalla)
         reservas_p = ", ".join(sin_programa['ID de reserva'].astype(str).tolist()[:15])
         errores.append(f"Falta CENTRO DE COSTO en ID: {reservas_p}")
         
@@ -42,13 +53,11 @@ def procesar_archivo():
         reservas_v = ", ".join(sin_vehiculo['ID de reserva'].astype(str).tolist()[:15])
         errores.append(f"Falta VEHÍCULO (Conductor) en ID: {reservas_v}")
 
-    # Si hay al menos un error, frenamos el proceso y enviamos la alerta a Blogger
     if errores:
-        mensaje_final = "CORRIGE EN AUTOCAB ANTES DE PROCESAR:\n\n" + "\n".join(errores)
+        mensaje_final = "CORRIGE EN AUTOCAB O EN TU EXCEL ANTES DE PROCESAR:\n\n" + "\n".join(errores)
         return jsonify({"error": mensaje_final}), 400
     # --- FIN DEL FILTRO DE AUDITORÍA ---
 
-    # Si todo está perfecto, continuamos con la limpieza y cálculos
     df['Precio'] = df['Precio'].apply(limpiar_moneda)
     if 'Costo' in df.columns:
         df['Costo'] = df['Costo'].apply(limpiar_moneda)
