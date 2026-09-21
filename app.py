@@ -5,7 +5,6 @@ import io
 from openpyxl import load_workbook
 
 app = Flask(__name__)
-# Permitimos que Blogger pueda leer el nombre del archivo generado
 CORS(app, expose_headers=["Content-Disposition"])
 
 def limpiar_moneda(x):
@@ -20,13 +19,17 @@ def procesar_archivo():
         return "No archivo", 400
     
     file = request.files['file']
+    tipo_reporte = request.form.get('tipo_reporte', 'admin') # 'admin' o 'cliente'
+    
     df = pd.read_csv(file, quotechar='"')
     
     df['Precio'] = df['Precio'].apply(limpiar_moneda)
-    df['Costo'] = df['Costo'].apply(limpiar_moneda)
-    df['Vehículo'] = df['Vehículo'].astype(str).str.strip()
+    if 'Costo' in df.columns:
+        df['Costo'] = df['Costo'].apply(limpiar_moneda)
+    if 'Vehículo' in df.columns:
+        df['Vehículo'] = df['Vehículo'].astype(str).str.strip()
 
-    # --- LÓGICA PARA EL NOMBRE DEL ARCHIVO CON FECHAS ---
+    # Calcular fechas para el nombre
     try:
         fechas = pd.to_datetime(df['Hora de Pickup (Local)'], dayfirst=True, errors='coerce')
         fechas_validas = fechas.dropna()
@@ -35,14 +38,23 @@ def procesar_archivo():
             max_date = fechas_validas.max()
             meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
             mes_str = meses[max_date.month - 1]
-            nombre_archivo = f"Almaviva_{min_date.day}_al_{max_date.day}_{mes_str}.xlsx"
+            prefijo = "Admin" if tipo_reporte == 'admin' else "Cliente"
+            nombre_archivo = f"{prefijo}_Almaviva_{min_date.day}_al_{max_date.day}_{mes_str}.xlsx"
         else:
-            nombre_archivo = "Almaviva_Organizado.xlsx"
+            nombre_archivo = "Reporte_Almaviva.xlsx"
     except:
-        nombre_archivo = "Almaviva_Organizado.xlsx"
+        nombre_archivo = "Reporte_Almaviva.xlsx"
 
     output = io.BytesIO()
-    df_base = df[['ID de reserva', 'Hora de Pickup (Local)', 'Recoger', 'Destino', 'Nombre', 'Precio', 'Costo', 'Vehículo', 'Programa de viaje']].copy()
+    
+    # Seleccionar columnas según el tipo de reporte
+    if tipo_reporte == 'admin':
+        columnas = ['ID de reserva', 'Hora de Pickup (Local)', 'Recoger', 'Destino', 'Nombre', 'Precio', 'Costo', 'Vehículo', 'Programa de viaje']
+    else:
+        # Reporte limpio para el cliente
+        columnas = ['ID de reserva', 'Hora de Pickup (Local)', 'Recoger', 'Destino', 'Nombre', 'Precio', 'Programa de viaje']
+        
+    df_base = df[columnas].copy()
     programas = df['Programa de viaje'].dropna().unique()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -53,51 +65,57 @@ def procesar_archivo():
 
     output.seek(0)
     wb = load_workbook(output)
-    
-    # Formato oficial de Excel para moneda
     formato_moneda = '"$"#,##0.00'
     
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         max_row = ws.max_row
-        
-        # Ajustamos el ancho
-        ws.column_dimensions['F'].width = 16
-        ws.column_dimensions['G'].width = 16
-        ws.column_dimensions['H'].width = 12
-        
-        # --- NUEVO: Le damos formato de precio/moneda a todas las filas de Precio y Costo ---
-        for row in range(2, max_row + 1):
-            ws[f'F{row}'].number_format = formato_moneda
-            ws[f'G{row}'].number_format = formato_moneda
-            
         fila_inicio = max_row + 2
         
-        # Fórmulas de los totales
-        ws[f'E{fila_inicio}'] = 'DTS'
-        ws[f'F{fila_inicio}'] = f'=SUMIF(H2:H{max_row}, "8979", F2:F{max_row})'
-        
-        ws[f'E{fila_inicio+1}'] = 'TRC'
-        ws[f'F{fila_inicio+1}'] = f'=SUMIF(H2:H{max_row}, "<>8979", G2:G{max_row})'
-        
-        ws[f'E{fila_inicio+2}'] = 'ING'
-        ws[f'F{fila_inicio+2}'] = f'=SUMIF(H2:H{max_row}, "<>8979", F2:F{max_row}) - F{fila_inicio+1}'
-        
-        ws[f'E{fila_inicio+3}'] = 'SUBTOTAL'
-        ws[f'F{fila_inicio+3}'] = f'=F{fila_inicio} + F{fila_inicio+1} + F{fila_inicio+2}'
-        
-        ws[f'E{fila_inicio+4}'] = 'COMISIÓN 5%'
-        ws[f'F{fila_inicio+4}'] = f'=F{fila_inicio+3} * 0.05'
-        
-        ws[f'E{fila_inicio+5}'] = 'IVA 19%'
-        ws[f'F{fila_inicio+5}'] = f'=F{fila_inicio+4} * 0.19'
-        
-        ws[f'E{fila_inicio+6}'] = 'TOTAL'
-        ws[f'F{fila_inicio+6}'] = f'=F{fila_inicio+3} + F{fila_inicio+4} + F{fila_inicio+5}'
+        if tipo_reporte == 'admin':
+            ws.column_dimensions['F'].width = 16
+            ws.column_dimensions['G'].width = 16
+            ws.column_dimensions['H'].width = 12
+            for row in range(2, max_row + 1):
+                ws[f'F{row}'].number_format = formato_moneda
+                ws[f'G{row}'].number_format = formato_moneda
+                
+            ws[f'E{fila_inicio}'] = 'DTS'
+            ws[f'F{fila_inicio}'] = f'=SUMIF(H2:H{max_row}, "8979", F2:F{max_row})'
+            ws[f'E{fila_inicio+1}'] = 'TRC'
+            ws[f'F{fila_inicio+1}'] = f'=SUMIF(H2:H{max_row}, "<>8979", G2:G{max_row})'
+            ws[f'E{fila_inicio+2}'] = 'ING'
+            ws[f'F{fila_inicio+2}'] = f'=SUMIF(H2:H{max_row}, "<>8979", F2:F{max_row}) - F{fila_inicio+1}'
+            ws[f'E{fila_inicio+3}'] = 'SUBTOTAL'
+            ws[f'F{fila_inicio+3}'] = f'=F{fila_inicio} + F{fila_inicio+1} + F{fila_inicio+2}'
+            ws[f'E{fila_inicio+4}'] = 'COMISIÓN 5%'
+            ws[f'F{fila_inicio+4}'] = f'=F{fila_inicio+3} * 0.05'
+            ws[f'E{fila_inicio+5}'] = 'IVA 19%'
+            ws[f'F{fila_inicio+5}'] = f'=F{fila_inicio+4} * 0.19'
+            ws[f'E{fila_inicio+6}'] = 'TOTAL'
+            ws[f'F{fila_inicio+6}'] = f'=F{fila_inicio+3} + F{fila_inicio+4} + F{fila_inicio+5}'
+            
+            for i in range(fila_inicio, fila_inicio + 7):
+                ws[f'F{i}'].number_format = formato_moneda
 
-        # Le damos el mismo formato de moneda a la tabla de resultados
-        for i in range(fila_inicio, fila_inicio + 7):
-            ws[f'F{i}'].number_format = formato_moneda
+        else: # Lógica para el Cliente
+            ws.column_dimensions['F'].width = 16
+            ws.column_dimensions['G'].width = 30 # Ampliamos Programa de Viaje
+            
+            for row in range(2, max_row + 1):
+                ws[f'F{row}'].number_format = formato_moneda
+                
+            ws[f'E{fila_inicio}'] = 'subtotal'
+            ws[f'F{fila_inicio}'] = f'=SUM(F2:F{max_row})'
+            ws[f'E{fila_inicio+1}'] = 'comision 5%'
+            ws[f'F{fila_inicio+1}'] = f'=F{fila_inicio} * 0.05'
+            ws[f'E{fila_inicio+2}'] = 'iva 19%'
+            ws[f'F{fila_inicio+2}'] = f'=F{fila_inicio+1} * 0.19'
+            ws[f'E{fila_inicio+3}'] = 'total'
+            ws[f'F{fila_inicio+3}'] = f'=F{fila_inicio} + F{fila_inicio+1} + F{fila_inicio+2}'
+            
+            for i in range(fila_inicio, fila_inicio + 4):
+                ws[f'F{i}'].number_format = formato_moneda
 
     final_output = io.BytesIO()
     wb.save(final_output)
